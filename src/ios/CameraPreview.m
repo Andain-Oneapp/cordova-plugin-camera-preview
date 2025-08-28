@@ -104,6 +104,20 @@
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
 }
 
+- (void)isStarted:(CDVInvokedUrlCommand*)command {
+  BOOL started = NO;
+  if (self.sessionManager) {
+    if ([self.sessionManager respondsToSelector:@selector(isRunning)]) {
+      started = [self.sessionManager isRunning];
+    } else {
+      started = (self.cameraRenderController != nil && self.cameraRenderController.view.superview != nil);
+    }
+  }
+  CDVPluginResult *r = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsBool:started];
+  [self.commandDelegate sendPluginResult:r callbackId:command.callbackId];
+}
+
+
 - (void) hideCamera:(CDVInvokedUrlCommand*)command {
   NSLog(@"hideCamera");
   CDVPluginResult *pluginResult;

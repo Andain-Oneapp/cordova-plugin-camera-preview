@@ -66,6 +66,10 @@
   return videoDevice.formats;
 }
 
+- (BOOL)isRunning {
+  return (self.session && self.session.isRunning);
+}
+
 - (AVCaptureVideoOrientation) getCurrentOrientation {
   return [self getCurrentOrientation: [[UIApplication sharedApplication] statusBarOrientation]];
 }

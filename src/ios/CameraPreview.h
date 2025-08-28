@@ -42,6 +42,7 @@
 - (void) invokeTakePicture;
 
 - (void) invokeTapToFocus:(CGPoint) point;
+- (void)isStarted:(CDVInvokedUrlCommand*)command;
 
 @property (nonatomic) CameraSessionManager *sessionManager;
 @property (nonatomic) CameraRenderController *cameraRenderController;

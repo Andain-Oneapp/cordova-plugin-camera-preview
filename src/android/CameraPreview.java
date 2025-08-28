@@ -193,6 +193,10 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
       return getSupportedColorEffects(callbackContext);
     } else if (GET_CAMERA_CHARACTERISTICS_ACTION.equals(action)) {
       return getCameraCharacteristics(callbackContext);
+    } else if ("isStarted".equals(action)) {
+      boolean started = (fragment != null && fragment.getCamera() != null);
+      callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, started));
+      return true;
     }
 
     return false;
@@ -271,9 +275,18 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     Log.d(TAG, "start camera action");
 
     if (fragment != null) {
-      callbackContext.error("Camera already started");
+      // Re-atacha el listener y opcionalmente actualiza rect si cambiaron medidas
+      fragment.setEventListener(this);
+
+      // Si quieres, también actualiza la posición/tamaño:
+      // fragment.setRect(computedX, computedY, computedWidth, computedHeight);
+
+      PluginResult ok = new PluginResult(PluginResult.Status.OK, "Camera already running; listener reattached");
+      ok.setKeepCallback(false);
+      callbackContext.sendPluginResult(ok);
       return true;
     }
+
 
     final float opacity = Float.parseFloat(alpha);
 
@@ -1006,32 +1019,36 @@ public class CameraPreview extends CordovaPlugin implements CameraActivity.Camer
     return true;
   }
 
-  private boolean stopCamera(CallbackContext callbackContext) {
-    if(webViewParent != null) {
-      cordova.getActivity().runOnUiThread(new Runnable() {
-        @Override
-        public void run() {
-          ((ViewGroup)webView.getView()).bringToFront();
-          webViewParent = null;
+  private boolean stopCamera(final CallbackContext callbackContext) {
+    cordova.getActivity().runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        try {
+          if (webViewParent != null) {
+            try {
+              ((ViewGroup) webView.getView()).bringToFront();
+            } catch (Exception ignored) {
+            }
+            webViewParent = null;
+          }
+          if (fragment == null) {
+            callbackContext.error("No preview");
+            return;
+          }
+          FragmentManager fm = cordova.getActivity().getFragmentManager();
+          FragmentTransaction ft = fm.beginTransaction();
+          ft.remove(fragment);
+          ft.commitAllowingStateLoss();
+          fm.executePendingTransactions(); // ✅ realmente removido
+
+          fragment = null;
+          callbackContext.success();
+        } catch (Exception e) {
+          Log.e(TAG, "stopCamera error", e);
+          callbackContext.error("stopCamera failed: " + e.getMessage());
         }
-      });
-    }
-
-    if(this.hasView(callbackContext) == false){
-      return true;
-    }
-
-    try {
-      FragmentManager fragmentManager = cordova.getActivity().getFragmentManager();
-      FragmentTransaction fragmentTransaction = fragmentManager.beginTransaction();
-      fragmentTransaction.remove(fragment);
-      fragmentTransaction.commit();
-      fragment = null;
-    } catch (Exception e) {
-      // prevent null pointer exception "Cant perform this action after
-      // onSaveInstanceState"
-    }
-    callbackContext.success();
+      }
+    });
     return true;
   }
 

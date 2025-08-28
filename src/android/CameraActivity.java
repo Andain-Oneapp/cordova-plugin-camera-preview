@@ -285,62 +285,151 @@ public class CameraActivity extends Fragment {
   public void onResume() {
     super.onResume();
 
+    // Si el Fragment no está realmente adjunto, salimos
+    if (!isAdded() || getActivity() == null) {
+      Log.w(TAG, "onResume: fragment not added/active yet");
+      return;
+    }
+
+    // Asegura que el preview exista (por si el sistema recreó la vista)
     try {
-      mCamera = Camera.open(defaultCameraId);
-
-      if (cameraParameters != null) {
-        mCamera.setParameters(cameraParameters);
-      }
-
-      cameraCurrentlyLocked = defaultCameraId;
-
-      if(mPreview.mPreviewSize == null){
-        mPreview.setCamera(mCamera, cameraCurrentlyLocked);
-
-        // Don't immediately call the callback - post it as a delayed action
-        // to ensure the listener is properly set up when it's called
-        if (eventListener != null) {
-          new Handler().post(new Runnable() {
-            @Override
-            public void run() {
-              if (eventListener != null && isAdded() && !isDetached()) {
-                eventListener.onCameraStarted();
-              }
-            }
-          });
-        }
-      } else {
-        mPreview.switchCamera(mCamera, cameraCurrentlyLocked);
-        mCamera.startPreview();
-      }
-
-      Log.d(TAG, "cameraCurrentlyLocked:" + cameraCurrentlyLocked);
-
-      final FrameLayout frameContainerLayout = (FrameLayout) view.findViewById(getResources().getIdentifier("frame_container", "id", appResourcesPackage));
-
-      ViewTreeObserver viewTreeObserver = frameContainerLayout.getViewTreeObserver();
-
-      if (viewTreeObserver.isAlive()) {
-        viewTreeObserver.addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-          @Override
-          public void onGlobalLayout() {
-            frameContainerLayout.getViewTreeObserver().removeGlobalOnLayoutListener(this);
-            frameContainerLayout.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
-            Activity activity = getActivity();
-            if (isAdded() && activity != null) {
-              final RelativeLayout frameCamContainerLayout = (RelativeLayout) view.findViewById(getResources().getIdentifier("frame_camera_cont", "id", appResourcesPackage));
-
-              FrameLayout.LayoutParams camViewLayout = new FrameLayout.LayoutParams(frameContainerLayout.getWidth(), frameContainerLayout.getHeight());
-              camViewLayout.gravity = Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL;
-              frameCamContainerLayout.setLayoutParams(camViewLayout);
-            }
-          }
-        });
+      if (view == null || mPreview == null) {
+        Log.d(TAG, "onResume: recreating preview");
+        createCameraPreview();
       }
     } catch (Exception e) {
-      Log.e(TAG, "Error in onResume", e);
+      Log.e(TAG, "onResume: createCameraPreview failed", e);
+      return;
     }
+
+    // Recalcula la cámara por defecto (por si cambió orientación o facing deseado)
+    setDefaultCameraId();
+
+    // Pequeño retry en caso de que el servicio de cámara aún esté ocupado
+    final Handler handler = new Handler();
+    final int MAX_ATTEMPTS = 3;
+    final long BASE_DELAY_MS = 120;
+
+    final Runnable openTask = new Runnable() {
+      int attempt = 0;
+
+      @Override
+      public void run() {
+        attempt++;
+
+        if (!isAdded() || getActivity() == null) {
+          Log.w(TAG, "openTask: fragment not added; abort");
+          return;
+        }
+
+        try {
+          // Limpia cualquier handle previo por seguridad
+          if (mCamera != null) {
+            try {
+              mCamera.release();
+            } catch (Exception ignore) {
+            }
+            mCamera = null;
+          }
+
+          // Abre la cámara
+          mCamera = Camera.open(defaultCameraId);
+
+          // Restaura parámetros previos si existían
+          if (cameraParameters != null) {
+            mCamera.setParameters(cameraParameters);
+          }
+
+          cameraCurrentlyLocked = defaultCameraId;
+
+          if (mPreview.mPreviewSize == null) {
+            // Primera vez: setea la cámara en el preview
+            mPreview.setCamera(mCamera, cameraCurrentlyLocked);
+
+            // Notifica inicio a JS/Plugin cuando el listener esté listo
+            if (eventListener != null && isAdded() && !isDetached()) {
+              handler.post(new Runnable() {
+                @Override
+                public void run() {
+                  if (eventListener != null && isAdded() && !isDetached()) {
+                    eventListener.onCameraStarted();
+                  } else {
+                    Log.w(TAG, "onResume: listener not ready after post");
+                  }
+                }
+              });
+            } else {
+              Log.w(TAG, "onResume: eventListener is null or fragment detached; skipping callback");
+            }
+          } else {
+            // Ya había preview -> solo reconfigura y arranca
+            mPreview.switchCamera(mCamera, cameraCurrentlyLocked);
+            mCamera.startPreview();
+          }
+
+          Log.d(TAG, "cameraCurrentlyLocked: " + cameraCurrentlyLocked);
+
+          // Ajusta layout del contenedor cuando ya tenga medidas
+          adjustPreviewLayoutSafely();
+
+        } catch (RuntimeException openErr) {
+          Log.w(TAG, "Camera.open failed (attempt " + attempt + ")", openErr);
+          // Reintenta con backoff lineal corto
+          if (attempt < MAX_ATTEMPTS && isAdded()) {
+            handler.postDelayed(this, BASE_DELAY_MS * attempt);
+          } // si no, desistimos sin crash (dejamos mCamera = null)
+        } catch (Exception e) {
+          Log.e(TAG, "Error in onResume", e);
+        }
+      }
+    };
+
+    // Dispara el primer intento (no bloqueante)
+    handler.post(openTask);
   }
+
+  /**
+   * Ajusta el tamaño/posición del contenedor de la cámara cuando el layout esté
+   * listo.
+   * Es la misma lógica que tenías, pero con null-safety.
+   */
+private void adjustPreviewLayoutSafely() {
+  if (view == null || getActivity() == null) return;
+
+  final FrameLayout frameContainerLayout =
+      (FrameLayout) view.findViewById(getResources().getIdentifier("frame_container", "id", appResourcesPackage));
+  if (frameContainerLayout == null) {
+    Log.w(TAG, "adjustPreviewLayoutSafely: frame_container not found");
+    return;
+  }
+
+  final ViewTreeObserver vto = frameContainerLayout.getViewTreeObserver();
+  if (!vto.isAlive()) return;
+
+  vto.addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+    @Override public void onGlobalLayout() {
+      try {
+        frameContainerLayout.getViewTreeObserver().removeGlobalOnLayoutListener(this);
+      } catch (Exception ignore) {}
+
+      frameContainerLayout.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+      Activity activity = getActivity();
+      if (!isAdded() || activity == null) return;
+
+      final RelativeLayout frameCamContainerLayout =
+          (RelativeLayout) view.findViewById(getResources().getIdentifier("frame_camera_cont", "id", appResourcesPackage));
+      if (frameCamContainerLayout == null) {
+        Log.w(TAG, "adjustPreviewLayoutSafely: frame_camera_cont not found");
+        return;
+      }
+
+      FrameLayout.LayoutParams camViewLayout =
+          new FrameLayout.LayoutParams(frameContainerLayout.getWidth(), frameContainerLayout.getHeight());
+      camViewLayout.gravity = Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL;
+      frameCamContainerLayout.setLayoutParams(camViewLayout);
+    }
+  });
+}
 
   @Override
   public void onPause() {
